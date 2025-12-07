@@ -19,3 +19,19 @@ export interface UploadedFile {
   file: File;
   previewUrl: string;
 }
+
+export interface JournalEntry {
+  id: string;
+  timestamp: string;
+  text: string;
+  journalPhotoCount: number;
+  spacePhotoCount: number;
+}
+
+export interface UserPatternProfile {
+  summary: string;
+  tendencies: string[];
+  typical_triggers: string[];
+  typical_coping_styles: string[];
+  last_updated: string;
+}

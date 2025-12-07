@@ -1,18 +1,37 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { AnalysisResult } from "../types";
+import { AnalysisResult, JournalEntry, UserPatternProfile } from "../types";
 
-const SYSTEM_INSTRUCTION = `You are an AI that analyzes a person’s journals and photos of their space to help them recognize their own patterns.
+const SYSTEM_INSTRUCTION = `You are an AI that analyzes a person's journals and photos of their space to help them recognize their own patterns over time.
 
-Do NOT diagnose or label any mental disorder.
-Do NOT give medical, clinical, or crisis advice.
-Stay in the domain of self-observation, life patterns, emotional tendencies, values, and habits.
-Look for correlations across time, emotions, environment, and behavior.
-Identify what they keep returning to (topics, worries, desires).
-Infer what they may be chasing (validation, safety, achievement, freedom, control, belonging, etc.) but phrase it tentatively ("it seems like…", "you may be…").
+SAFETY & SCOPE
+- Do NOT diagnose or label any mental disorder.
+- Do NOT give medical, clinical, or crisis advice.
+- This is a self-reflection tool only.
+- If there is any indication of serious distress or self-harm, gently suggest they talk to a trusted person or professional and avoid analyzing the crisis itself.
 
-If there is any indication of serious distress or self-harm, gently suggest they talk to a trusted person or professional and avoid analysis of the crisis itself.
+GROUNDING & HONESTY
+- Base ALL observations ONLY on what is actually visible in the text, images, and summarized past entries/profile.
+- Do NOT invent specific biographical details (e.g., names, locations, trips, job titles, book titles) that are not explicitly mentioned.
+- If there is not enough information to infer something, say so explicitly (e.g., "There is not enough information to confidently infer X").
+- Be conservative and humble in your inferences. Avoid story-like speculation.
 
-You must handle both text input and image inputs. Analyze the visual environment in the photos (clutter, lighting, organization, specific objects) to infer environmental patterns.`;
+TASK
+- You receive:
+  1) A summary of past journal entries,
+  2) A previous pattern_profile (if any),
+  3) The current journal entry and images.
+- Stay in the domain of self-observation, life patterns, emotional tendencies, values, and habits.
+- Look for correlations across time, emotions, environment, and behavior.
+- Identify recurring ways this person tends to respond (e.g. flight vs fight, freeze, rumination, seeking reassurance).
+- Identify what they keep returning to (topics, worries, desires).
+- Infer what they may be chasing (validation, safety, achievement, freedom, control, belonging, etc.) but phrase it tentatively ("it seems like…", "you may be…").
+- When the input is very short or vague, say that the insights are limited and speak in terms of possibilities, not certainties.
+- Analyze the visual environment in the photos (clutter, lighting, organization, specific objects) to infer environmental patterns.
+
+OUTPUT FORMAT
+- You MUST respond as strict JSON matching the provided schema.
+- The "pattern_profile" field should represent a *running*, cumulative profile that takes into account all past entries and the current one.
+- When updating pattern_profile, you may refine or slightly adjust previous tendencies, but avoid dramatic changes unless the new evidence is strong.`;
 
 const RESPONSE_SCHEMA: Schema = {
   type: Type.OBJECT,
@@ -54,6 +73,17 @@ const RESPONSE_SCHEMA: Schema = {
       type: Type.ARRAY,
       items: { type: Type.STRING },
       description: "5-10 questions for self-reflection."
+    },
+    pattern_profile: {
+      type: Type.OBJECT,
+      properties: {
+        summary: { type: Type.STRING },
+        tendencies: { type: Type.ARRAY, items: { type: Type.STRING } },
+        typical_triggers: { type: Type.ARRAY, items: { type: Type.STRING } },
+        typical_coping_styles: { type: Type.ARRAY, items: { type: Type.STRING } },
+        last_updated: { type: Type.STRING },
+      },
+      required: ["summary", "tendencies", "typical_triggers", "typical_coping_styles", "last_updated"]
     }
   },
   required: [
@@ -64,7 +94,8 @@ const RESPONSE_SCHEMA: Schema = {
     "triggers",
     "recurring_themes",
     "core_pursuits_and_why",
-    "reflection_prompts"
+    "reflection_prompts",
+    "pattern_profile"
   ]
 };
 
@@ -91,20 +122,45 @@ const fileToGenerativePart = async (file: File): Promise<{ inlineData: { data: s
 export const analyzePatterns = async (
   journalText: string,
   journalPhotos: File[],
-  spacePhotos: File[]
-): Promise<AnalysisResult> => {
+  spacePhotos: File[],
+  pastEntries: JournalEntry[],
+  previousProfile: UserPatternProfile | null
+): Promise<{ analysis: AnalysisResult; pattern_profile: UserPatternProfile }> => {
   if (!process.env.API_KEY) {
     throw new Error("API Key is missing. Please ensure process.env.API_KEY is set.");
   }
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
+  const historySummaryText = pastEntries
+    .slice(-10)
+    .reverse()
+    .map(e => `- [${e.timestamp}] ${e.text.slice(0, 500)}${e.text.length > 500 ? '...' : ''}`) // Truncate individual entries slightly to save context
+    .join("\n");
+
+  const previousProfileText = previousProfile
+    ? JSON.stringify(previousProfile, null, 2)
+    : "None yet. You are building the first version of this profile.";
+
   // Prepare prompts parts
   const parts: any[] = [];
+
+  // Context Block
+  parts.push({
+    text: `PAST ENTRIES (summarized):
+${historySummaryText || "No past entries. This is the first one."}
+
+PREVIOUS PATTERN PROFILE (if any):
+${previousProfileText}
+
+CURRENT ENTRY TO ANALYZE:`
+  });
 
   // Add Journal Text
   if (journalText.trim()) {
     parts.push({ text: `JOURNAL ENTRIES/NOTES:\n${journalText}` });
+  } else {
+    parts.push({ text: `(No text provided for this entry)` });
   }
 
   // Add Journal Photos
@@ -125,13 +181,13 @@ export const analyzePatterns = async (
     }
   }
 
-  if (parts.length === 0) {
+  if (journalText.trim().length === 0 && journalPhotos.length === 0 && spacePhotos.length === 0) {
     throw new Error("Please provide some text or images to analyze.");
   }
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview", // Using Gemini 3 Pro as requested for complex reasoning
+      model: "gemini-3-pro-preview", 
       contents: {
         parts: parts
       },
@@ -139,6 +195,7 @@ export const analyzePatterns = async (
         systemInstruction: SYSTEM_INSTRUCTION,
         responseMimeType: "application/json",
         responseSchema: RESPONSE_SCHEMA,
+        temperature: 0.4,
       }
     });
 
@@ -147,8 +204,23 @@ export const analyzePatterns = async (
       throw new Error("No response received from the model.");
     }
 
-    const jsonResponse = JSON.parse(textResponse) as AnalysisResult;
-    return jsonResponse;
+    const jsonResponse = JSON.parse(textResponse);
+    
+    // Separate the AnalysisResult from the UserPatternProfile
+    const analysis: AnalysisResult = {
+      overview: jsonResponse.overview,
+      emotional_patterns: jsonResponse.emotional_patterns,
+      environment_patterns: jsonResponse.environment_patterns,
+      behavioral_loops: jsonResponse.behavioral_loops,
+      triggers: jsonResponse.triggers,
+      recurring_themes: jsonResponse.recurring_themes,
+      core_pursuits_and_why: jsonResponse.core_pursuits_and_why,
+      reflection_prompts: jsonResponse.reflection_prompts,
+    };
+
+    const pattern_profile: UserPatternProfile = jsonResponse.pattern_profile;
+
+    return { analysis, pattern_profile };
 
   } catch (error) {
     console.error("Gemini Analysis Error:", error);

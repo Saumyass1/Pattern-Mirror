@@ -1,21 +1,42 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import FileUpload from './components/FileUpload';
 import AnalysisResultView from './components/AnalysisResultView';
-import { UploadedFile, AnalysisState } from './types';
+import { UploadedFile, AnalysisState, JournalEntry, UserPatternProfile } from './types';
 import { analyzePatterns } from './services/geminiService';
-import { AlertCircle, Loader2, ArrowRight, ShieldCheck } from 'lucide-react';
+import { AlertCircle, Loader2, ArrowRight, ShieldCheck, History, User } from 'lucide-react';
 
 const App: React.FC = () => {
   const [journalText, setJournalText] = useState('');
   const [journalPhotos, setJournalPhotos] = useState<UploadedFile[]>([]);
   const [spacePhotos, setSpacePhotos] = useState<UploadedFile[]>([]);
   
+  // New state for history and profile
+  const [history, setHistory] = useState<JournalEntry[]>([]);
+  const [profile, setProfile] = useState<UserPatternProfile | null>(null);
+
   const [analysisState, setAnalysisState] = useState<AnalysisState>({
     isLoading: false,
     error: null,
     result: null
   });
+
+  // Load from localStorage on mount
+  useEffect(() => {
+    try {
+      const storedHistory = localStorage.getItem("patternMirrorHistory");
+      const storedProfile = localStorage.getItem("patternMirrorProfile");
+
+      if (storedHistory) {
+        setHistory(JSON.parse(storedHistory));
+      }
+      if (storedProfile) {
+        setProfile(JSON.parse(storedProfile));
+      }
+    } catch (e) {
+      console.error("Failed to load history/profile from local storage", e);
+    }
+  }, []);
 
   const handleAnalyze = async () => {
     setAnalysisState({ isLoading: true, error: null, result: null });
@@ -24,8 +45,32 @@ const App: React.FC = () => {
       const jFiles = journalPhotos.map(f => f.file);
       const sFiles = spacePhotos.map(f => f.file);
       
-      const result = await analyzePatterns(journalText, jFiles, sFiles);
-      setAnalysisState({ isLoading: false, error: null, result });
+      const { analysis, pattern_profile } = await analyzePatterns(
+        journalText, 
+        jFiles, 
+        sFiles,
+        history,
+        profile
+      );
+      
+      // Create new entry
+      const newEntry: JournalEntry = {
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        text: journalText.trim(),
+        journalPhotoCount: journalPhotos.length,
+        spacePhotoCount: spacePhotos.length,
+      };
+
+      // Update state and storage
+      const updatedHistory = [...history, newEntry];
+      setHistory(updatedHistory);
+      setProfile(pattern_profile);
+      setAnalysisState({ isLoading: false, error: null, result: analysis });
+
+      localStorage.setItem("patternMirrorHistory", JSON.stringify(updatedHistory));
+      localStorage.setItem("patternMirrorProfile", JSON.stringify(pattern_profile));
+      
     } catch (err: any) {
       setAnalysisState({ 
         isLoading: false, 
@@ -36,6 +81,15 @@ const App: React.FC = () => {
   };
 
   const isAnalyzeDisabled = (journalText.trim().length === 0 && journalPhotos.length === 0 && spacePhotos.length === 0) || analysisState.isLoading;
+
+  const clearHistory = () => {
+    if (confirm("Are you sure you want to clear your local history and profile? This cannot be undone.")) {
+      setHistory([]);
+      setProfile(null);
+      localStorage.removeItem("patternMirrorHistory");
+      localStorage.removeItem("patternMirrorProfile");
+    }
+  };
 
   return (
     <div className="min-h-screen flex flex-col font-sans">
@@ -48,23 +102,32 @@ const App: React.FC = () => {
           <div className="w-full lg:w-1/3 lg:min-w-[400px] space-y-8 h-fit lg:sticky lg:top-24">
             
             <div className="bg-white p-6 rounded-xl shadow-sm border border-stone-100 space-y-6">
-              <div>
-                <h2 className="text-lg font-serif font-bold text-stone-800 mb-4">Your Inputs</h2>
-                <div className="space-y-2">
-                  <label htmlFor="journal-text" className="block text-sm font-medium text-stone-700">
-                    Journal Entries / Notes
-                  </label>
-                  <textarea
-                    id="journal-text"
-                    value={journalText}
-                    onChange={(e) => setJournalText(e.target.value.slice(0, 10000))}
-                    placeholder="Paste thoughts, recurring worries, dreams, or daily logs here..."
-                    className="w-full h-48 p-3 bg-stone-50 border border-stone-200 rounded-lg text-stone-800 focus:ring-2 focus:ring-stone-400 focus:border-transparent resize-none text-sm leading-relaxed"
-                  />
-                  <div className="flex justify-between text-xs text-stone-400">
-                    <span>Be honest. It stays local until sent to AI.</span>
-                    <span>{journalText.length}/10,000</span>
-                  </div>
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-serif font-bold text-stone-800">Your Inputs</h2>
+                {history.length > 0 && (
+                  <button 
+                    onClick={clearHistory}
+                    className="text-xs text-stone-400 hover:text-red-500 transition-colors"
+                  >
+                    Clear History
+                  </button>
+                )}
+              </div>
+              
+              <div className="space-y-2">
+                <label htmlFor="journal-text" className="block text-sm font-medium text-stone-700">
+                  Journal Entries / Notes
+                </label>
+                <textarea
+                  id="journal-text"
+                  value={journalText}
+                  onChange={(e) => setJournalText(e.target.value.slice(0, 10000))}
+                  placeholder="Paste thoughts, recurring worries, dreams, or daily logs here..."
+                  className="w-full h-48 p-3 bg-stone-50 border border-stone-200 rounded-lg text-stone-800 focus:ring-2 focus:ring-stone-400 focus:border-transparent resize-none text-sm leading-relaxed"
+                />
+                <div className="flex justify-between text-xs text-stone-400">
+                  <span>Be honest. It stays local until sent to AI.</span>
+                  <span>{journalText.length}/10,000</span>
                 </div>
               </div>
 
@@ -121,6 +184,43 @@ const App: React.FC = () => {
                   <p>This tool uses AI to analyze patterns. It is not a therapist. If you are in crisis, please contact a professional.</p>
                </div>
             </div>
+
+            {profile && (
+              <div className="bg-white p-5 rounded-xl border border-stone-200 shadow-sm space-y-3">
+                <div className="flex items-center gap-2 border-b border-stone-100 pb-2">
+                  <User className="w-4 h-4 text-stone-600" />
+                  <h3 className="text-sm font-bold text-stone-800">Ongoing Pattern Profile</h3>
+                </div>
+                
+                <p className="text-sm text-stone-700 leading-relaxed italic">
+                  "{profile.summary}"
+                </p>
+                
+                {profile.tendencies.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-stone-500 uppercase tracking-wider mb-2 mt-3">Core Tendencies</p>
+                    <ul className="space-y-1">
+                      {profile.tendencies.slice(0, 3).map((t, idx) => (
+                        <li key={idx} className="flex items-start gap-2 text-xs text-stone-700">
+                          <span className="w-1 h-1 rounded-full bg-stone-400 mt-1.5 flex-shrink-0" />
+                          <span>{t}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                
+                <div className="flex items-center justify-between pt-2">
+                   <p className="text-[10px] text-stone-400">
+                     Updated: {new Date().toLocaleDateString()}
+                   </p>
+                   <span className="text-[10px] text-stone-400 flex items-center gap-1">
+                     <History className="w-3 h-3" />
+                     {history.length} entries
+                   </span>
+                </div>
+              </div>
+            )}
 
           </div>
 
