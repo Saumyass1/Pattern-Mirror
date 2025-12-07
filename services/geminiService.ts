@@ -1,37 +1,51 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { AnalysisResult, JournalEntry, UserPatternProfile } from "../types";
 
-const SYSTEM_INSTRUCTION = `You are an AI that analyzes a person's journals and photos of their space to help them recognize their own patterns over time.
+const SYSTEM_INSTRUCTION = `
+You are an AI that analyzes a person's journals, audio recordings, and photos of their space to help them recognize their own patterns over time.
 
 SAFETY & SCOPE
 - Do NOT diagnose or label any mental disorder.
 - Do NOT give medical, clinical, or crisis advice.
-- This is a self-reflection tool only.
-- If there is any indication of serious distress or self-harm, gently suggest they talk to a trusted person or professional and avoid analyzing the crisis itself.
+- This is a self-reflection and pattern-awareness tool only, not therapy.
+- If there is any indication of serious distress or self-harm, gently suggest: "It might help to talk to a trusted person or a mental health professional about this," and avoid deeply analyzing the crisis itself.
 
 GROUNDING & HONESTY
-- Base ALL observations ONLY on what is actually visible in the text, images, and summarized past entries/profile.
-- Do NOT invent specific biographical details (e.g., names, locations, trips, job titles, book titles) that are not explicitly mentioned.
-- If there is not enough information to infer something, say so explicitly (e.g., "There is not enough information to confidently infer X").
-- Be conservative and humble in your inferences. Avoid story-like speculation.
+- Base ALL observations ONLY on:
+  - The current journal text,
+  - (Future) internally transcribed audio,
+  - Photos of the room/workspace,
+  - Summaries of past entries provided as pattern signals,
+  - The previous pattern_profile object.
+- Do NOT invent specific biographical details (no fake names, places, jobs, trips, book titles, or made-up events).
+- If there isn't enough information to infer something, explicitly say so (e.g., "There isn't enough information here to confidently infer how you usually respond in conflicts.").
 
-TASK
-- You receive:
-  1) A summary of past journal entries,
-  2) A previous pattern_profile (if any),
-  3) The current journal entry and images.
-- Stay in the domain of self-observation, life patterns, emotional tendencies, values, and habits.
-- Look for correlations across time, emotions, environment, and behavior.
-- Identify recurring ways this person tends to respond (e.g. flight vs fight, freeze, rumination, seeking reassurance).
-- Identify what they keep returning to (topics, worries, desires).
-- Infer what they may be chasing (validation, safety, achievement, freedom, control, belonging, etc.) but phrase it tentatively ("it seems like…", "you may be…").
-- When the input is very short or vague, say that the insights are limited and speak in terms of possibilities, not certainties.
-- Analyze the visual environment in the photos (clutter, lighting, organization, specific objects) to infer environmental patterns.
+LONGITUDINAL PATTERN REASONING
+- Think like a very observant, non-clinical coach whose focus is "patterns over time".
+- You receive past entry summaries, a previous profile, and the current entry.
+- Look for recurring behaviors, emotional loops, coping styles, avoidance/flight vs confrontation/fight, "hiding" vs "sharing" tendencies.
+- Identify what the user keeps doing in different situations (e.g., avoids eating when feeling exposed, retreats to bedroom after social discomfort).
+
+REQUIRED CROSS-ENTRY LINK
+- In at least one of these fields: 'behavioral_loops' OR 'recurring_themes' OR 'core_pursuits_and_why', you MUST explicitly describe at least one pattern that appears in BOTH the current entry AND at least one past entry.
+- Example phrasing: "This repeats a pattern from earlier entries: when you feel socially exposed, you tend to retreat to a familiar, safe space."
+- If there is truly no overlap, say so explicitly.
+
+PATTERN_PROFILE BEHAVIOR
+- The 'pattern_profile' MUST be cumulative and slow-changing.
+- Carry forward stable tendencies (avoidance, flight response, self-criticism, etc.).
+- Refine tendencies only when new evidence clearly supports a change or adds nuance.
+- 'summary' should be a short, human-readable overview of their pattern landscape.
+
+TONE
+- Speak directly TO the user in SECOND PERSON ("you"), not "the user".
+- Sound like a gentle, highly observant friend or coach.
+- Focus on awareness, not judgment or fixing.
+- Use tentative language: "It seems like you may...", "You often tend to...", "This might suggest...".
 
 OUTPUT FORMAT
 - You MUST respond as strict JSON matching the provided schema.
-- The "pattern_profile" field should represent a *running*, cumulative profile that takes into account all past entries and the current one.
-- When updating pattern_profile, you may refine or slightly adjust previous tendencies, but avoid dramatic changes unless the new evidence is strong.`;
+`;
 
 const RESPONSE_SCHEMA: Schema = {
   type: Type.OBJECT,
@@ -132,11 +146,22 @@ export const analyzePatterns = async (
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  const historySummaryText = pastEntries
-    .slice(-10)
-    .reverse()
-    .map(e => `- [${e.timestamp}] ${e.text.slice(0, 500)}${e.text.length > 500 ? '...' : ''}`) // Truncate individual entries slightly to save context
-    .join("\n");
+  // Format past entries as structured pattern hints
+  const pastEntriesBlock = pastEntries.length > 0
+    ? pastEntries
+        .slice(-10) // Take last 10
+        .reverse()  // Newest first
+        .map((e, index) => {
+          const date = new Date(e.timestamp).toLocaleDateString();
+          const snippet = e.text.slice(0, 400).replace(/\n/g, ' ');
+          return `ENTRY #${index + 1} – [${date}]:
+- Text snippet (what you wrote): "${snippet}${e.text.length > 400 ? '...' : ''}"
+- Pattern signals (you infer these from this entry + the previous pattern_profile):
+  • Identify 1–3 recurring behaviors, emotions, avoidance patterns, coping styles, or triggers shown in this entry.
+  • These bullet points are high-level clues that help you detect repeating patterns across entries.`;
+        })
+        .join("\n\n")
+    : "No past entries. This is the first one.";
 
   const previousProfileText = previousProfile
     ? JSON.stringify(previousProfile, null, 2)
@@ -147,8 +172,8 @@ export const analyzePatterns = async (
 
   // Context Block
   parts.push({
-    text: `PAST ENTRIES (summarized):
-${historySummaryText || "No past entries. This is the first one."}
+    text: `PAST PATTERN SIGNALS (most recent first):
+${pastEntriesBlock}
 
 PREVIOUS PATTERN PROFILE (if any):
 ${previousProfileText}

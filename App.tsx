@@ -192,6 +192,10 @@ const App: React.FC = () => {
                   <h3 className="text-sm font-bold text-stone-800">Ongoing Pattern Profile</h3>
                 </div>
                 
+                <p className="text-xs text-stone-500 italic">
+                  This profile updates as you add more entries. It reflects patterns that repeat across your journaling.
+                </p>
+
                 <p className="text-sm text-stone-700 leading-relaxed italic">
                   "{profile.summary}"
                 </p>
@@ -212,7 +216,7 @@ const App: React.FC = () => {
                 
                 <div className="flex items-center justify-between pt-2">
                    <p className="text-[10px] text-stone-400">
-                     Updated: {new Date().toLocaleDateString()}
+                     Updated: {new Date(profile.last_updated).toLocaleDateString()}
                    </p>
                    <span className="text-[10px] text-stone-400 flex items-center gap-1">
                      <History className="w-3 h-3" />
